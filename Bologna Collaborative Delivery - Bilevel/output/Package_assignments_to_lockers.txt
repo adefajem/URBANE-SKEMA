@@ -1,0 +1,26 @@
+Packages assigned to locker 4:
+package_id 10
+package_id 11
+package_id 13
+package_id 14
+package_id 15
+package_id 18
+
+Packages assigned to locker 5:
+package_id 0
+package_id 1
+package_id 2
+package_id 3
+package_id 4
+package_id 5
+package_id 6
+
+Packages assigned to locker 6:
+package_id 7
+package_id 8
+package_id 9
+package_id 12
+package_id 16
+package_id 17
+package_id 19
+
