@@ -76,6 +76,10 @@ def HPR_model_emissions(timelimitSecs, packages, destinations, locker_nodes, loc
     # Variable theta used to linearize the non-convex quadratic constraint
     theta = {(k,p,s):model.continuous_var(lb=0.0, name='theta_%d_%d_%d' % (k,p,s)) for k in KD for p in P for s in satellites}
     
+    # Variables for earliest and latest times
+    alpha_early = {(k,i): model.continuous_var(lb=0.0, name='alphaEarly_%d_%d' % (k,i)) for k in KD for i in V2}
+    alpha_late = {(k,i): model.continuous_var(lb=0.0, name='alphaLate_%d_%d' % (k,i)) for k in KD for i in V2}
+    
     
     # ----- Leader Objective Function -----
     cost_per_DSP_vehicle = 500
@@ -136,6 +140,14 @@ def HPR_model_emissions(timelimitSecs, packages, destinations, locker_nodes, loc
     
     
     # ----- Last-Mile Follower Constraints -----
+    # Time Violation Constraints
+    for d in D:
+        for k in vehicle_bounds_DSPs[d]:
+            for i in dsp_d_nodes[d]:
+                model.add_constraint(alpha_early[k,i] >= earliest[i]*model.sum(x[k,i,j] for j in dsp_d_nodes[d] if i!=j) - t[k,i])
+                model.add_constraint(alpha_late[k,i] >= t[k,i] - latest[i]*model.sum(x[k,i,j] for j in dsp_d_nodes[d] if i!=j))
+
+
 
     # If a DSP is assigned a package, it should be carried on one vehicle k
     for d in D:
@@ -615,6 +627,7 @@ def solve_HPR_model(model, packages, num_nodes, num_DSPs, num_vehicles_per_FM, n
         
         w_sol = extract_w(hpr_sol, num_vehicles_per_FM, distance_matrix)      
         xm_sol = extract_xm(hpr_sol, num_vehicles_per_DSP, distance_matrix)
+        alpha_early_sol, alpha_late_sol = extract_alphas(hpr_sol, num_vehicles_per_DSP)
              
         lamda_sol = np.zeros((len(packages), num_nodes))
         for p in range(len(packages)):
@@ -637,7 +650,7 @@ def solve_HPR_model(model, packages, num_nodes, num_DSPs, num_vehicles_per_FM, n
                 if y_sol[p,d] <= 0.1:
                     y_sol[p,d] = 0.0               
             
-    return hpr_sol, lamda_sol, w_sol, xm_sol, y_sol, hpr_obj_value
+    return hpr_sol, lamda_sol, w_sol, xm_sol, y_sol, hpr_obj_value, alpha_early_sol, alpha_late_sol
 
 
 def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, num_nodes, num_FirstMilers, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, cost_per_km_for_FM, cost_per_km_for_DSP, 
@@ -659,11 +672,10 @@ def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, n
         
         # 1. Solve HPR to get lamda, w, x, y
         print('Solving HPR...')
-        hpr_sol, lamda_sol, w_sol, xm_sol, y_sol, hpr_obj_value = solve_HPR_model(hpr_mod, packages, num_nodes, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, 
+        hpr_sol, lamda_sol, w_sol, xm_sol, y_sol, hpr_obj_value, alpha_early_sol, alpha_late_sol = solve_HPR_model(hpr_mod, packages, num_nodes, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, 
                                                                                   distance_matrix, verboseTorF)
         
-        alpha_early_total, alpha_late_total = extract_alphas(hpr_sol, num_vehicles_per_DSP)
-                    
+                            
         # 2. For each follower:        
         #    - evaluate FM follower response
         V_hat_FirstM = compute_first_mile_follower_obj(w_sol, num_FirstMilers, cost_per_km_for_FM)
@@ -678,7 +690,7 @@ def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, n
         difference_FM = list(np.array(V_hat_FirstM) - np.array(V_FirstM))
         
         #    - evaluate LM follower response to y
-        V_hat_LastM = compute_last_mile_follower_obj(xm_sol, alpha_early_total, alpha_late_total, num_DSPs, cost_per_km_for_DSP)
+        V_hat_LastM = compute_last_mile_follower_obj(xm_sol, alpha_early_sol, alpha_late_sol, num_DSPs, cost_per_km_for_DSP)
         # print('V_hat_LastM = ', V_hat_LastM)
         #    - solve LM Follower(y)
         print('Solving Last-Mile follower problems...')
