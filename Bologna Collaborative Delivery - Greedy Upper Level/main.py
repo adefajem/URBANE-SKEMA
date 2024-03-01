@@ -115,10 +115,12 @@ def main():
                                     leave_time_start, leave_time_end, emissions_matrix_EV, time_violation_penalty, 
                                     time_limit_seconds)
 
+    # --- Write solution to file ---  
+    res_filename = 'output/results.xlsx'
+    functions.write_instance_results_to_file(res_filename, y, locker_assignments, routing_solutions[1], num_vehicles_per_DSP,
+                                          distance_matrix, emissions_matrix_EV, dsp_depots, locker_nodes, packages, destinations)
 
-    # --- Write solution to file ---
-    functions.extract_solutions_and_write(routing_solutions, y, locker_assignments, emissions_matrix_EV, city_instance_df)
-
+    print('Done!')
 
 if __name__ == "__main__":
     main()

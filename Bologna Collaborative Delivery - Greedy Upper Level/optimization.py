@@ -5,6 +5,8 @@ Created on Mon Jan  8 15:23:06 2024
 @author: ade.fajemisin
 """
 from docplex.mp.model import Model
+import functions
+import pandas as pd
 
 def Last_Mile_Follower(y, lamda, V2d, A2d, fol_depot, locker_nodes, packages, destinations, num_vehicles_for_follower,
                       distance_matrix, travel_time_matrix, num_time_periods_matrix, bigM_matrix,
@@ -146,3 +148,65 @@ def solve_param_last_mile_followers(y, lamda, dsp_d_nodes, dsp_d_arcs,
         sol_df_vec.append(sol_df)
         
     return V, sol_df_vec
+
+def extract_xm(sol_df, num_vehicles_per_DSP, distance_matrix):
+    xm_df = None
+    
+    if len(sol_df) > 0:
+        xm_rows = sol_df[sol_df['name'].str.startswith('xm')]
+        xm_rows = xm_rows.reset_index(drop=True)
+        vehicle_bounds = functions.create_bounds(num_vehicles_per_DSP)
+
+        # Remove possible duplicate
+        if len(xm_rows) > 0:
+            for i in range(len(xm_rows)):
+                if xm_rows.loc[i]['value'] < 0.1:
+                    xm_rows.drop([i], inplace=True)
+        xm_rows.reset_index(inplace=True)
+
+        # Find out which vehicle belongs to which DSP
+        list_of_vehicle_bounds = []
+        for i in range(len(vehicle_bounds)):
+            list_of_vehicle_bounds.append(list(vehicle_bounds[i]))
+
+        dk_match = pd.DataFrame(columns = ['d', 'k'])
+        for d in range(len(list_of_vehicle_bounds)):
+            for k in list_of_vehicle_bounds[d]:
+                dk_match.loc[len(dk_match)] = [d, float(k)]
+
+        xm_df = pd.DataFrame(columns=['i','j','k','m','c_ijm'])
+        for i in range(xm_rows.shape[0]):
+            row = xm_rows['name'][i].split('_')
+            row.pop(0);    
+            row = [int(i) for i in row]
+            row.append(distance_matrix[row[0]][row[1]][row[3]])
+            xm_df.loc[len(xm_df)] = row
+
+        xm_df = xm_df.merge(dk_match, on='k', how='left')
+        xm_df['d'] = xm_df['d'].astype('int')    
+      
+    return xm_df
+
+def extract_t(lastmiler_final_sol):
+    t_df = None
+    
+    if len(lastmiler_final_sol) > 0:
+        t_rows = lastmiler_final_sol[lastmiler_final_sol['name'].str.startswith('t_')]
+        t_rows = t_rows.reset_index(drop=True)
+
+        # Remove possible duplicate
+        if len(t_rows) > 0:
+            for i in range(len(t_rows)):
+                if t_rows.loc[i]['value'] < 0.01:
+                    t_rows.drop([i], inplace=True)
+        t_rows.reset_index(inplace=True)
+
+        t_df = pd.DataFrame(columns=['k','i','time'])
+        for i in range(t_rows.shape[0]):
+            row = t_rows['name'][i].split('_')
+            row.pop(0);    
+            row = [int(i) for i in row]
+            row.append(t_rows['value'][i])
+            t_df.loc[len(t_df)] = row    
+      
+    return t_df
