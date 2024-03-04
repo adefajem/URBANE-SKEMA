@@ -308,33 +308,8 @@ def write_locker_assignments_to_file(locker_assignments, file_path):
             for package_id in package_ids:
                 file.write(f"package_id {package_id}\n")
             file.write("\n")
-    return   
+    return      
 
-# def extract_solutions_and_write(routing_solutions, y, locker_assignments, emissions_matrix_EV, bologna_map_df):  
-#     print('Writing solutions to file')
-    
-#     # Write package assignments to Lockers
-#     locker_file_path = 'output/Package_assignments_to_lockers.txt'
-#     write_locker_assignments_to_file(locker_assignments, locker_file_path)
-        
-#     for d in range(len(routing_solutions)):
-#         # Extract xm
-#         xm_out = extract_xm(routing_solutions[1][d], emissions_matrix_EV)
-
-#         # Get path
-#         dsp_path = get_path(xm_out, d)
-
-#         # Write DSP path to file
-#         file_path = 'output/last-miler_'+ str(d) + '_path.txt'
-#         write_dsp_path_to_file(dsp_path, file_path)
-        
-#         # Write package assignments to DSPs
-#         assignment_file_path = 'output/Package_assignments_to_last-miler_'+ str(d) + '.txt'
-#         write_assignments_to_file(y[:, d], d, assignment_file_path)
-        
-#     print('Done!')
-
-    return
 def get_lastmiler_assgt(y_sol_final):
     y_sol_final = np.round(y_sol_final)
     indices = []
@@ -379,7 +354,7 @@ def get_distance_and_emissions(last_m_sol_dfs_final, num_vehicles_per_DSP, dista
         if len(last_m_sol_dfs_final[d]) > 0:
             # Compute total distance by last-miler
             xm_sol_final_d = optimization.extract_xm(last_m_sol_dfs_final[d], num_vehicles_per_DSP, distance_matrix)    
-            dist_res.append(xm_sol_final_d['c_ijm'].sum())  
+            dist_res.append(xm_sol_final_d['c_ijm'].sum()/1000)  
 
             # Compute total emissions by last-miler
             total_emissions_d = 0
@@ -388,7 +363,7 @@ def get_distance_and_emissions(last_m_sol_dfs_final, num_vehicles_per_DSP, dista
                 j_index = int(xm_sol_final_d.loc[i]['j'])
                 m_index = int(xm_sol_final_d.loc[i]['m'])
                 total_emissions_d += emissions_matrix_EV[i_index][j_index][m_index]
-            emm_res.append(total_emissions_d)
+            emm_res.append(total_emissions_d/1000)
 
         else:
             dist_res.append(0) 
