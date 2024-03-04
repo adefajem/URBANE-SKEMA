@@ -87,11 +87,11 @@ def main():
     start_time_periods = [7]
     end_time_periods = [23]
     time_periods_multiplier = [1] # Only 1 time period for now...
-    time_violation_penalty = 10000
+    time_violation_penalty = 1000
 
     # Problem runtime time limit is also read from file
     tim = pd.read_excel('input/time_limit.xlsx')
-    time_limit_seconds = int(tim['Time Limit (seconds)'])
+    time_limit_seconds = int(tim['Time Limit Per Follower (seconds)'])
 
 
 
