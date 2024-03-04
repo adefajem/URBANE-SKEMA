@@ -8,6 +8,7 @@ from docplex.mp.model import Model
 import pandas as pd
 import numpy as np
 import functions
+from time import perf_counter as pc
 
 
 def HPR_model_emissions(timelimitSecs, packages, destinations, locker_nodes, locker_capacities, num_FirstMilers, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, all_nodes_first_echelon,
@@ -224,9 +225,9 @@ def HPR_model_emissions(timelimitSecs, packages, destinations, locker_nodes, loc
     return model
 
 def first_mile_follower(lamda, Pf, V1f, A1f, fol_depot, cost_per_km, num_vehicles_for_follower, locker_nodes, 
-                        distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest):
+                        distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest, time_limit_per_follower):
     model = Model(name = 'First_Mile_Follower')
-#     model.parameters.timelimit = 30
+    model.parameters.timelimit = time_limit_per_follower
     
     # ----- Sets -----
     K = range(num_vehicles_for_follower)
@@ -285,9 +286,9 @@ def first_mile_follower(lamda, Pf, V1f, A1f, fol_depot, cost_per_km, num_vehicle
     return obj_val, sol_df
 
 def last_mile_follower(y, lamda, V2d, A2d, fol_depot, cost_per_km, num_vehicles_for_follower, packages, destinations, locker_nodes, distance_matrix, travel_time_matrix, num_time_periods_matrix, earliest, latest,
-                       leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty):
+                       leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty, time_limit_per_follower):
     model = Model(name = 'Last_Mile_Follower')
-    model.parameters.timelimit = 250
+    model.parameters.timelimit = time_limit_per_follower
     
     # --- Sets ---
     M = num_time_periods_matrix  
@@ -481,6 +482,29 @@ def extract_xm(hpr_sol, num_vehicles_per_DSP, distance_matrix):
     
       
     return xm_df
+def extract_t(lastmiler_final_sol):
+    t_df = None
+    
+    if len(lastmiler_final_sol) > 0:
+        t_rows = lastmiler_final_sol[lastmiler_final_sol['name'].str.startswith('t_')]
+        t_rows = t_rows.reset_index(drop=True)
+
+        # Remove possible duplicate
+        if len(t_rows) > 0:
+            for i in range(len(t_rows)):
+                if t_rows.loc[i]['value'] < 0.01:
+                    t_rows.drop([i], inplace=True)
+        t_rows.reset_index(inplace=True)
+
+        t_df = pd.DataFrame(columns=['k','i','time'])
+        for i in range(t_rows.shape[0]):
+            row = t_rows['name'][i].split('_')
+            row.pop(0);    
+            row = [int(i) for i in row]
+            row.append(t_rows['value'][i])
+            t_df.loc[len(t_df)] = row    
+      
+    return t_df
 
 def extract_w(hpr_sol, num_vehicles_per_FM, distance_matrix):
     w_rows = hpr_sol[hpr_sol['name'].str.startswith('w')]
@@ -536,13 +560,13 @@ def compute_first_mile_follower_obj(w_sol, num_FirstMilers, cost_per_km_for_FM):
 
 # Solve parameterized follower problem for each FM
 def solve_param_first_mile_followers(lamda, Pf, num_FirstMilers, num_vehicles_per_FM, cost_per_km_for_FM, fm_depots, fm_f_nodes, fm_f_arcs,
-                                     locker_nodes, distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest):
+                                     locker_nodes, distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest,time_limit_per_follower):
     V = []
     sol_df_vec = []
     
     for f in range(num_FirstMilers):
         obj, sol_df = first_mile_follower(lamda, Pf[f], fm_f_nodes[f], fm_f_arcs[f], fm_depots[f], cost_per_km_for_FM[f], num_vehicles_per_FM[f],
-                                          locker_nodes, distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest) 
+                                          locker_nodes, distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest, time_limit_per_follower) 
         
 
         
@@ -554,10 +578,9 @@ def solve_param_first_mile_followers(lamda, Pf, num_FirstMilers, num_vehicles_pe
 
 
 # Compute DSP followers' response
-def compute_last_mile_follower_obj(xm_sol, alpha_early_df, alpha_late_df, num_DSPs, cost_per_km_for_DSP):
+def compute_last_mile_follower_obj(xm_sol, alpha_early_df, alpha_late_df, num_DSPs, cost_per_km_for_DSP, time_violation_penalty):
     V_hat = []    
-    total_cost_per_follower = []
-    
+        
     # For each follower...
     for d in range(num_DSPs):
         # If there is a solution...
@@ -568,11 +591,9 @@ def compute_last_mile_follower_obj(xm_sol, alpha_early_df, alpha_late_df, num_DS
             penalty_early = alpha_early_df.loc[alpha_early_df['d'] == d, 'value'].sum()
             penalty_late= alpha_late_df.loc[alpha_late_df['d'] == d, 'value'].sum()
                
-            total_cost_per_follower.append(cost + penalty_early + penalty_late)
+            V_hat.append(cost + time_violation_penalty*(penalty_early + penalty_late))
         
-            V_hat.append(cost)
         else:
-            total_cost_per_follower.append(0)
             V_hat.append(0)
     
     return V_hat
@@ -581,14 +602,14 @@ def compute_last_mile_follower_obj(xm_sol, alpha_early_df, alpha_late_df, num_DS
 # Solve parameterized follower problem for each DSP
 def solve_param_last_mile_followers(y_sol, lamda_sol, num_DSPs, num_vehicles_per_DSP, cost_per_km_for_DSP, dsp_depots, dsp_d_nodes, dsp_d_arcs,
                                     packages, destinations, locker_nodes, distance_matrix, travel_time_matrix, num_time_periods_matrix, earliest, latest,
-                                    leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty):
+                                    leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty, time_limit_per_follower):
     V = []
     sol_df_vec = []
 
     for d in range(num_DSPs):  
         obj, sol_df = last_mile_follower(y_sol[:, d], lamda_sol, dsp_d_nodes[d], dsp_d_arcs[d], dsp_depots[d], cost_per_km_for_DSP[d], num_vehicles_per_DSP[d],
                                          packages, destinations, locker_nodes, distance_matrix, travel_time_matrix, num_time_periods_matrix, earliest, latest, 
-                                         leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty) 
+                                         leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty,time_limit_per_follower) 
         
         
         
@@ -655,14 +676,15 @@ def solve_HPR_model(model, packages, num_nodes, num_DSPs, num_vehicles_per_FM, n
 
 def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, num_nodes, num_FirstMilers, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, cost_per_km_for_FM, cost_per_km_for_DSP, 
                             distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest, fm_depots, fm_f_nodes, fm_f_arcs, dsp_depots, dsp_d_nodes, dsp_d_arcs, 
-                            num_time_periods_matrix, leave_time_start, leave_time_end, time_violation_penalty, verboseTorF):
-    num_iterations = 0
+                            num_time_periods_matrix, leave_time_start, leave_time_end, time_violation_penalty, verboseTorF, time_limit_per_follower, problem_time_limit):
+    num_iterations = 1
     epsilon = 1e-4
     bigMcutD = 1e6
     bigMcutF = 1e6
     convergedFirst = False
     convergedLast = False
     converged = False
+    start_time = pc()
     
     veh_bounds_FM = functions.create_bounds(num_vehicles_per_FM)
     veh_bounds_DSP = functions.create_bounds(num_vehicles_per_DSP)
@@ -683,20 +705,20 @@ def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, n
         #    - solve FM Follower(lamda)
         print('Solving First-Mile follower problems...')
         V_FirstM, first_m_sol_dfs = solve_param_first_mile_followers(lamda_sol, Pf, num_FirstMilers, num_vehicles_per_FM, cost_per_km_for_FM, fm_depots, fm_f_nodes, fm_f_arcs,
-                                                                     locker_nodes, distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest)
+                                                                     locker_nodes, distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest, time_limit_per_follower)
                 
         # print('V_FirstM = ', V_FirstM)
         #    - First Mile: If  V_f_hat - V_f > epsilon, generate optimality cut
         difference_FM = list(np.array(V_hat_FirstM) - np.array(V_FirstM))
         
         #    - evaluate LM follower response to y
-        V_hat_LastM = compute_last_mile_follower_obj(xm_sol, alpha_early_sol, alpha_late_sol, num_DSPs, cost_per_km_for_DSP)
+        V_hat_LastM = compute_last_mile_follower_obj(xm_sol, alpha_early_sol, alpha_late_sol, num_DSPs, cost_per_km_for_DSP, time_violation_penalty)
         # print('V_hat_LastM = ', V_hat_LastM)
         #    - solve LM Follower(y)
         print('Solving Last-Mile follower problems...')
         V_LastM, last_m_sol_dfs = solve_param_last_mile_followers(y_sol, lamda_sol, num_DSPs, num_vehicles_per_DSP, cost_per_km_for_DSP, dsp_depots, dsp_d_nodes, dsp_d_arcs,
                                                                   packages, destinations, locker_nodes, distance_matrix, travel_time_matrix, num_time_periods_matrix, earliest, latest,
-                                                                  leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty)
+                                                                  leave_time_start, leave_time_end, bigM_matrix, time_violation_penalty, time_limit_per_follower)
         
         
                
@@ -704,7 +726,8 @@ def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, n
         
         # print('V_LastM = ', V_LastM)                
         #    - Last Mile: If V_d_hat - V_d > epsilon, generate optimality cut
-        difference_LM = list(np.array(V_hat_LastM) - np.array(V_LastM))     
+        difference_LM = list(np.array(V_hat_LastM) - np.array(V_LastM))    
+#         print(difference_LM)
 
         
         checks_FM = do_check(epsilon, difference_FM)
@@ -768,11 +791,18 @@ def cutting_plane_algorithm(hpr_mod, Pf, packages, destinations, locker_nodes, n
         # update number of iterations
         num_iterations += 1   
         
+        # update time
+        current_time = pc()-start_time
+        
         if convergedFirst == True and convergedLast == True:
             # All followers are optimal and we can stop
             print('All followers optimal. Terminating.')
             # print('FM Gap:', difference_FM)
             # print('LM Gap:', difference_LM)
             converged = True  
+        
+        if current_time > problem_time_limit:
+            print('End of time limit. Terminating.')
+            converged = True
     
-    return hpr_sol, lamda_sol, w_sol, xm_sol, y_sol
+    return hpr_sol, lamda_sol, y_sol, last_m_sol_dfs

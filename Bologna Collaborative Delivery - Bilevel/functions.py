@@ -9,6 +9,7 @@ Created on Fri Jan 12 14:42:46 2024
 import pandas as pd
 pd.options.mode.chained_assignment = None
 import numpy as np
+import optimization
 
 
 import networkx as nx
@@ -267,30 +268,93 @@ def write_dsp_path_to_file(my_list, file_path):
         file.write(" -> ".join(map(str, my_list)))
     return
 
-def extract_solutions_and_write(xm_sol_final, y, locker_assignments, lmd, dsp_depots):  
-    print('Writing solutions to file...')
-    
-    # Write package assignments to Lockers
-    locker_file_path = 'output/Package_assignments_to_lockers.txt'
-    write_locker_assignments_to_file(locker_assignments, locker_file_path)
-    
-    # Write DSP path to file
-    xm_sol_final = add_dsp_depot_column(lmd, xm_sol_final)
-    for i in dsp_depots:
-        xm_d = xm_sol_final[xm_sol_final['dsp_depot'] == i]    
-        if len(xm_d) != 0:
-            # Get path
-            dsp_path = get_path(xm_d, i)
-            # Write to file
-            dd = lmd.index[lmd['LM_id'] == i].to_list()[0]
-            file_path = 'output/last-miler_'+ str(dd) + '_path.txt'
-            write_dsp_path_to_file(dsp_path, file_path)
 
-    for d in range(y.shape[1]):
-        # Write package assignments to DSPs
-        assignment_file_path = 'output/Package_assignments_to_last-miler_'+ str(d) + '.txt'
-        write_assignments_to_file(y[:, d], d, assignment_file_path)
-        
-    print('Done!')
+def get_lastmiler_assgt(y_sol_final):
+    y_sol_final = np.round(y_sol_final)
+    indices = []
+    for row in y_sol_final:
+        index = next((i for i, x in enumerate(row) if x == 1), None)
+        indices.append(index if index is not None else -1)
+    return indices
+
+def get_times_at_destinations(last_m_sol_dfs_final, y_sol_final, packages, destinations, dsp_depots, locker_nodes):    
+    all_arrive_times = pd.DataFrame(columns=['k','i','time'])
+    irrelevant_rows = dsp_depots + locker_nodes
+    
+    for d in range(len(last_m_sol_dfs_final)):    
+        # If solution for DSP d exists:
+        if len(last_m_sol_dfs_final[d]) > 0:
+            arrive_time_d = optimization.extract_t(last_m_sol_dfs_final[d])
+            arrive_time_d_filtered = arrive_time_d[~arrive_time_d['i'].isin(irrelevant_rows)]
+            
+            all_arrive_times = pd.concat([all_arrive_times, arrive_time_d_filtered], axis=0)
+            
+    # Get times at which the nodes are visited in HH:MM
+    converted_hours = []
+    for i in range(len(all_arrive_times)):
+        hours = int(all_arrive_times.iloc[i]['time'])
+        minutes = int(all_arrive_times.iloc[i]['time']*60) % 60
+        converted_hours.append("%02d:%02d" % (hours, minutes))
+    
+    # Create dataframe and return
+    times_at_dest_df = pd.DataFrame()
+    times_at_dest_df['Package ID'] = packages
+    times_at_dest_df['Destination node'] = destinations
+    times_at_dest_df['Arrival Time at Destination (HH:MM)'] = converted_hours
+    times_at_dest_df['Carried by Last Miler'] = get_lastmiler_assgt(y_sol_final)
+    
+    return times_at_dest_df
+
+def get_distance_and_emissions(last_m_sol_dfs_final, num_vehicles_per_DSP, distance_matrix, emissions_matrix_EV):
+    dist_res = []
+    emm_res = []
+    for d in range(len(last_m_sol_dfs_final)): 
+        if len(last_m_sol_dfs_final[d]) > 0:
+            # Compute total distance by last-miler
+            xm_sol_final_d = optimization.extract_xm(last_m_sol_dfs_final[d], num_vehicles_per_DSP, distance_matrix)
+#             xm_sol_final_d = xm_sol_final.loc[xm_sol_final['d'] == d]    
+            dist_res.append(xm_sol_final_d['c_ijm'].sum())  
+
+            # Compute total emissions by last-miler
+            total_emissions_d = 0
+            for i in range(len(xm_sol_final_d)):
+                i_index = int(xm_sol_final_d.loc[i]['i'])
+                j_index = int(xm_sol_final_d.loc[i]['j'])
+                m_index = int(xm_sol_final_d.loc[i]['m'])
+                total_emissions_d += emissions_matrix_EV[i_index][j_index][m_index]
+            emm_res.append(total_emissions_d)
+        else:
+            dist_res.append(0) 
+            emm_res.append(0)
+     
+
+    # Create columns based on number of last-milers
+    cols = []
+    for i in range(len(num_vehicles_per_DSP)):
+        cols.append('Last Miler ' + str(i))
+
+    # create dataframe and write to file
+    dist_emm_df = pd.DataFrame([dist_res, emm_res], columns = cols, index = (['Total distance (km)', 'Total CO2 emissions (gCO2eq)']))
+    
+    return dist_emm_df
+
+def write_instance_results_to_file(res_filename, y_sol_final, locker_assignments, last_m_sol_dfs_final, num_vehicles_per_DSP, 
+                                   distance_matrix, emissions_matrix_EV, dsp_depots, locker_nodes, packages, destinations):
+    
+    
+    # Get distance travelled and total last-mile emissions
+    dist_emm_df = get_distance_and_emissions(last_m_sol_dfs_final, num_vehicles_per_DSP, distance_matrix, emissions_matrix_EV)
+      
+    # Get package assignments to Lockers
+    locker_ass_df = pd.DataFrame([(k, v) for k, vals in locker_assignments.items() for v in vals], columns=['Locker node', 'Package ID'])
+    
+    # Get package arrival times
+    times_at_dest_df = get_times_at_destinations(last_m_sol_dfs_final, y_sol_final, packages, destinations, dsp_depots, locker_nodes)
+    
+    # Write all to file
+    with pd.ExcelWriter(res_filename) as writer:  
+        dist_emm_df.to_excel(writer, sheet_name='Distance and Emissions')
+        locker_ass_df.to_excel(writer, sheet_name='Assignments to Lockers', index=False)
+        times_at_dest_df.to_excel(writer, sheet_name='Package Arrival Times', index=False)
 
     return

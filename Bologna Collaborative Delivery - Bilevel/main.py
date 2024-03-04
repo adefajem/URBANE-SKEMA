@@ -62,6 +62,7 @@ def main():
     
     
     # DSP vehicles
+    time_violation_penalty = 1000
     lmd = pd.read_excel('input/last_milers.xlsx')
     num_vehicles_per_DSP = list(lmd['num_vehicles'])
     num_DSPs = len(lmd['num_vehicles'])
@@ -130,33 +131,39 @@ def main():
     emissions_matrix_EV = functions.compute_emissions_EV(battery_capacity, emission_factor, generation_percentage, distance_matrix, travel_time_matrix, num_time_periods_matrix, num_nodes)
     
     
-    time_violation_penalty = 10000
+    
     
     # Problem runtime time limit is also read from file
-    tim = pd.read_excel('input/time_limit_per_iteration.xlsx')
-    time_limit_per_iteration = int(tim['Time Limit (seconds)'])
-
+    tim = pd.read_excel('input/time_limits.xlsx')
+    time_limit_per_iteration = int(tim['Time Limit Per Iteration(seconds)'])
+    time_limit_per_follower = int(tim['Time Limit Per Follower (seconds)'])
+    problem_time_limit = int(tim['Total Time Limit (seconds)'])
 
 
     # --- Run Optimizer ---
-    t = pc()
     bilevel_HPR_emissions_model = optimization.HPR_model_emissions(time_limit_per_iteration, packages, destinations, locker_nodes, locker_capacities, num_FirstMilers, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, all_nodes_first_echelon,
                             all_nodes_second_echelon, num_time_periods_matrix, emissions_matrix_ICE, emissions_matrix_EV, Pf, fm_depots, fm_f_nodes, fm_f_arcs, dsp_depots, dsp_d_nodes, dsp_d_arcs,
                             travel_time_matrix, bigM_matrix, earliest, latest, leave_time_start, leave_time_end)
     
 
     
-    hpr_sol_final, lamda_sol_final, w_sol_final, xm_sol_final, y_sol_final = optimization.cutting_plane_algorithm(bilevel_HPR_emissions_model, Pf, packages, destinations, locker_nodes, num_nodes, num_FirstMilers, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, cost_per_km_for_FM, cost_per_km_for_DSP, 
-                                distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest, fm_depots, fm_f_nodes, fm_f_arcs, dsp_depots, dsp_d_nodes, dsp_d_arcs, 
-                                num_time_periods_matrix, leave_time_start, leave_time_end, time_violation_penalty, False)
+    
+    hpr_sol_final, lamda_sol_final, y_sol_final, last_mile_sol_final = optimization.cutting_plane_algorithm(bilevel_HPR_emissions_model, Pf, packages, destinations, locker_nodes, num_nodes, num_FirstMilers, num_DSPs, num_vehicles_per_FM, num_vehicles_per_DSP, cost_per_km_for_FM, cost_per_km_for_DSP, 
+                            distance_matrix, travel_time_matrix, bigM_matrix, earliest, latest, fm_depots, fm_f_nodes, fm_f_arcs, dsp_depots, dsp_d_nodes, dsp_d_arcs, 
+                            num_time_periods_matrix, leave_time_start, leave_time_end, time_violation_penalty, False, time_limit_per_follower, problem_time_limit)
+
+
     
     
     locker_assignments = functions.get_locker_assignments(lamda_sol_final)
     
-
     # --- Write solution to file ---
-    functions.extract_solutions_and_write(xm_sol_final, y_sol_final, locker_assignments, lmd, dsp_depots)
-    print(f"Total time taken: {pc()-t}")
+    # functions.extract_solutions_and_write(xm_sol_final, y_sol_final, locker_assignments, lmd, dsp_depots)
+    res_filename = 'output/results.xlsx'
+    functions.write_instance_results_to_file(res_filename, y_sol_final, locker_assignments, last_mile_sol_final, num_vehicles_per_DSP,
+                                          distance_matrix, emissions_matrix_EV, dsp_depots, locker_nodes, packages, destinations)
+
+    print('Done!')
 
 
 if __name__ == "__main__":
