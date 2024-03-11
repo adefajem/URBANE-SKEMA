@@ -18,88 +18,69 @@ warnings.filterwarnings('ignore')
 
 
 def time_series_analysis(historical_data, num_days_forecast):
+    all_vehicle_forecasts = []
     
     # Filter out NAs just in case
     historical_data = historical_data.dropna()
     # Drop Delivery_ID column
     historical_data.drop(['Delivery_ID'], axis=1, inplace=True)
     
-    # Split into car and bike sets
+    # Get a list of vehicle types
+    vehicle_types = list(historical_data['Vehicle type'].unique())
     
-    # ---------------------------- BIKE FORECAST ----------------------------------
-    bike_data_ts = historical_data.loc[historical_data["Vehicle type"] == 'Bike', :]
-    bike_data_ts = bike_data_ts.sort_values('Date of delivery')
-    bike_data_ts = bike_data_ts.groupby('Date of delivery')['Total parcels/letters'].sum().reset_index()
+    for vehicle in vehicle_types:
+        # Subset data, sort and group
+        vehicle_data_ts = historical_data.loc[historical_data["Vehicle type"] == vehicle, :]
+        vehicle_data_ts = vehicle_data_ts.sort_values('Date of delivery')
+        vehicle_data_ts = vehicle_data_ts.groupby('Date of delivery')['Total parcels/letters'].sum().reset_index()
+        
+        # Rename columns
+        vehicle_data_ts = vehicle_data_ts.rename(columns={'Date of delivery': 'ds', 'Total parcels/letters': 'y'})
+        
+        # Hyperparameter tuning
+        # There is no hyperparameter tuning done yet. The amount of data we have currently is too litte
+        # for this. We can add this functionality in future when more data becomes available.
+        
+        # Model fitting
+        vehicle_ts_model = Prophet(interval_width=0.95)
+        vehicle_ts_model.fit(vehicle_data_ts)
+        
+        # Forecast
+        vehicle_ts_forecast = vehicle_ts_model.make_future_dataframe(periods=num_days_forecast, freq='D')
+        vehicle_ts_forecast = vehicle_ts_model.predict(vehicle_ts_forecast)
 
-    # Rename
-    bike_data_ts = bike_data_ts.rename(columns={'Date of delivery': 'ds', 'Total parcels/letters': 'y'})
-
-    # Hyperparameter tuning
-    # There is no hyperparameter tuning done yet. The amount of data we have currently is too litte
-    # for this. We can add this functionality in future when more data becomes available.
+        vehicle_forecast = vehicle_ts_forecast[['ds','yhat']].iloc[-num_days_forecast:]
+        vehicle_forecast = vehicle_forecast.astype({'yhat':'int'})
+        vehicle_forecast = vehicle_forecast.reset_index(drop=True)
+        
+       
+        # Save
+        all_vehicle_forecasts.append(vehicle_forecast)  
     
-    bike_ts_model = Prophet(interval_width=0.95)
-    bike_ts_model.fit(bike_data_ts)
-
-    # Forecast
-    bike_ts_forecast = bike_ts_model.make_future_dataframe(periods=num_days_forecast, freq='D')
-    bike_ts_forecast = bike_ts_model.predict(bike_ts_forecast)
-
-    bike_forecast = bike_ts_forecast[['ds','yhat']].iloc[-num_days_forecast:]
-    bike_forecast = bike_forecast.astype({'yhat':'int'})
-    bike_forecast = bike_forecast.reset_index(drop=True)
-    
-    # ---------------------------- CAR FORECAST ----------------------------------
-
-    car_data_ts = historical_data.loc[historical_data["Vehicle type"] == 'Car', :]
-    car_data_ts = car_data_ts.sort_values('Date of delivery')
-    car_data_ts = car_data_ts.groupby('Date of delivery')['Total parcels/letters'].sum().reset_index()
-    
-    # Rename
-    car_data_ts = car_data_ts.rename(columns={'Date of delivery': 'ds', 'Total parcels/letters': 'y'})
-
-    # Hyperparameter tuning
-    # There is no hyperparameter tuning done yet. The amount of data we have currently is too litte
-    # for this. We can add this functionality in future when more data becomes available.
-    
-    car_ts_model = Prophet(interval_width=0.95)
-    car_ts_model.fit(car_data_ts)
-
-    # Forecast
-    car_ts_forecast = car_ts_model.make_future_dataframe(periods=num_days_forecast, freq='D')
-    car_ts_forecast = car_ts_model.predict(car_ts_forecast)
-    
-    car_forecast = car_ts_forecast[['ds','yhat']].iloc[-num_days_forecast:]
-    car_forecast = car_forecast.astype({'yhat':'int'})
-    car_forecast = car_forecast.reset_index(drop=True)
-
     # Harmonize dates
-    bike_forecast, car_forecast = harmonize_dates(bike_forecast, car_forecast)
-    
-    # Return forecast
-    return bike_forecast, car_forecast
+    all_vehicle_forecasts = harmonize_dates(all_vehicle_forecasts)
+       
+    return all_vehicle_forecasts
 
-def harmonize_dates(bike_forecast, car_forecast):
-    # Convert date columns to datetime objects
-    bike_forecast['ds'] = pd.to_datetime(bike_forecast['ds'])
-    car_forecast['ds'] = pd.to_datetime(car_forecast['ds'])
-    
-    # Identify the latest date in each dataframe
-    latest_date_bike = bike_forecast['ds'].max()
-    latest_date_car = car_forecast['ds'].max()
+def harmonize_dates(all_vehicle_forecasts):
+    latest_dates_all = []    
+    for vehicle_forecast in all_vehicle_forecasts:
+        # Convert date columns to datetime objects
+        vehicle_forecast['ds'] = pd.to_datetime(vehicle_forecast['ds'])
+        
+        # Identify the latest date in each dataframe
+        latest_date_vehicle = vehicle_forecast['ds'].max()        
+        latest_dates_all.append(latest_date_vehicle)
     
     # Determine which dataframe has the latest dates
-    if latest_date_bike > latest_date_car:
-        latest_df = bike_forecast
-        other_df = car_forecast
-    else:
-        latest_df = car_forecast
-        other_df = bike_forecast
+    latest_index = latest_dates_all.index(max(latest_dates_all))
+    latest_df = all_vehicle_forecasts[latest_index]
     
     # Replace the dates in the other dataframe with the ones from the dataframe with the latest dates
-    other_df['ds'] = latest_df['ds']
-    
-    return bike_forecast, car_forecast
+    for vehicle_forecast in all_vehicle_forecasts:
+        vehicle_forecast['ds'] = latest_df['ds']
+        
+    return all_vehicle_forecasts
 
 def cluster_addresses(num_clusters, addresses_data):    
     kmeans = KMeans(n_clusters = 3, init ='k-means++')
@@ -124,19 +105,22 @@ def calc_probabilities(num_clusters, vehicle_numbers):
     return location_probabilities
 
 def get_location_probabilities(addresses_data, num_clusters):
-    bike_addresses = addresses_data.loc[addresses_data["Vehicle type"] == 'Bike', :]
-    bike_addresses = bike_addresses.reset_index()
-    bike_nums = bike_addresses['Cluster label'].value_counts()   
-    bike_probabilities = calc_probabilities(num_clusters, bike_nums)
-    bike_probabilities = list(bike_probabilities.loc[0])
+    all_vehicle_probabilities = []
     
-    car_addresses = addresses_data.loc[addresses_data["Vehicle type"] == 'Car', :]
-    car_addresses = car_addresses.reset_index()
-    car_nums = car_addresses['Cluster label'].value_counts()
-    car_probabilities = calc_probabilities(num_clusters, car_nums)   
-    car_probabilities = list(car_probabilities.loc[0])
+    # Get a list of vehicle types
+    vehicle_types = list(addresses_data['Vehicle type'].unique())
     
-    return bike_probabilities, car_probabilities
+    # Get location probabilities for each vehicle type
+    for vehicle in vehicle_types:
+        vehicle_addresses = addresses_data.loc[addresses_data['Vehicle type'] == vehicle, :]
+        vehicle_addresses = vehicle_addresses.reset_index()
+        vehicle_nums = vehicle_addresses['Cluster label'].value_counts()   
+        vehicle_probabilities = calc_probabilities(num_clusters, vehicle_nums)
+        vehicle_probabilities = list(vehicle_probabilities.loc[0])
+        # Store
+        all_vehicle_probabilities.append(vehicle_probabilities)
+    
+    return all_vehicle_probabilities
 
 def divide_with_probabilities(total, probabilities):
     parts = [int(prob * total) for prob in probabilities]
@@ -170,26 +154,22 @@ def get_forecast_df(addresses_data, forecast, probabilities,centroids, vehicle_t
             
     return all_data
 
-def output_complete_forecast(addresses_data, bike_forecast, car_forecast, centroids, bike_probabilities, car_probabilities):    
-    bike_forecast_rows = get_forecast_df(addresses_data, bike_forecast, bike_probabilities, centroids, 'Bike')
-    car_forecast_rows = get_forecast_df(addresses_data, car_forecast, car_probabilities, centroids, 'Car')
+def output_complete_forecast(addresses_data, all_vehicle_forecasts, all_vehicle_probabilities, centroids):    
+    all_forecasts_final = []
     
-    # Bike
-    bike_forecast_final = pd.DataFrame(data=bike_forecast_rows, columns=['Delivery_ID','Date of delivery','Delivery time slot','Delivery latitude','Delivery longtitude','Method of Delivery', 
-'Total parcels/letters','Vehicle type'])
-    bike_forecast_final.sort_values(by='Date of delivery', inplace = True) 
-    # Filter out rows where the values in 'Total parcels/letters' are zero
-    bike_forecast_final = bike_forecast_final[bike_forecast_final['Total parcels/letters'] != 0]    
-    bike_forecast_final = bike_forecast_final.reset_index(drop=True)    
-    bike_forecast_final['Delivery_ID'] = list(range(len(bike_forecast_final)))
+    vehicle_types = list(addresses_data['Vehicle type'].unique())
     
-     # Car
-    car_forecast_final = pd.DataFrame(data=car_forecast_rows, columns=['Delivery_ID','Date of delivery','Delivery time slot','Delivery latitude','Delivery longtitude','Method of Delivery', 
+    for v in range(len(all_vehicle_forecasts)):
+        vehicle_forecast_rows = get_forecast_df(addresses_data, all_vehicle_forecasts[v], all_vehicle_probabilities[v], centroids, vehicle_types[v])
+        vehicle_forecast_final = pd.DataFrame(data=vehicle_forecast_rows, columns=['Delivery_ID','Date of delivery','Delivery time slot','Delivery latitude','Delivery longtitude','Method of Delivery', 
 'Total parcels/letters','Vehicle type'])
-    car_forecast_final.sort_values(by='Date of delivery', inplace = True) 
-    # Filter out rows where the values in 'Total parcels/letters' are zero
-    car_forecast_final = car_forecast_final[car_forecast_final['Total parcels/letters'] != 0]    
-    car_forecast_final = car_forecast_final.reset_index(drop=True)    
-    car_forecast_final['Delivery_ID'] = list(range(len(car_forecast_final)))
+        vehicle_forecast_final.sort_values(by='Date of delivery', inplace = True) 
+         # Filter out rows where the values in 'Total parcels/letters' are zero
+        vehicle_forecast_final = vehicle_forecast_final[vehicle_forecast_final['Total parcels/letters'] != 0]    
+        vehicle_forecast_final = vehicle_forecast_final.reset_index(drop=True)    
+        vehicle_forecast_final['Delivery_ID'] = list(range(len(vehicle_forecast_final)))
+        # Store
+        all_forecasts_final.append(vehicle_forecast_final)
        
-    return bike_forecast_final, car_forecast_final
+    return all_forecasts_final
+
